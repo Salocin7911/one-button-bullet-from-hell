@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Orbitra — One‑Button Bullet Hell</title>
+  <style>
+    :root {
+      --bg: #0b0e13;
+      --fg: #e5eef7;
+      --accent: #6ad1ff;
+      --accent2: #ffe66a;
+      --muted: #98a2b3;
+    }
+    html, body { height: 100%; margin: 0; }
+    body { background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; overflow: hidden; }
+    #wrap { position: relative; width: 100vw; height: 100vh; }
+    canvas { display: block; width: 100%; height: 100%; background: radial-gradient(1200px 1200px at 50% 50%, #0e121a, #090b10 60%, #07090d); }
+    .hud { position: absolute; left: 16px; top: 12px; user-select: none; pointer-events: none; }
+    .hud .row { display: flex; gap: 16px; align-items: baseline; }
+    .hud .big { font-weight: 700; font-size: 20px; letter-spacing: 0.5px; }
+    .hud .small { font-size: 12px; color: var(--muted); }
+
+    .overlay { position: absolute; inset: 0; display: grid; place-items: center; }
+    .card { text-align: center; background: rgba(14, 18, 26, 0.7); border: 1px solid rgba(255,255,255,0.08); padding: 20px 24px; border-radius: 16px; backdrop-filter: blur(6px); box-shadow: 0 10px 40px rgba(0,0,0,0.35); max-width: 520px; }
+    .title { font-size: 28px; font-weight: 800; margin: 0 0 4px; }
+    .subtitle { margin: 0 0 12px; color: var(--muted); }
+    .keys { display: inline-flex; gap: 8px; font-size: 14px; color: #c5d2e5; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 8px 10px; border-radius: 999px; }
+    .k { background: rgba(255,255,255,0.08); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); }
+    .btnrow { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
+    .btn { cursor: pointer; user-select: none; padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)); color: var(--fg); font-weight: 600; letter-spacing: 0.3px; }
+    .btn:hover { transform: translateY(-1px); }
+    .credit { margin-top: 10px; font-size: 12px; color: var(--muted); }
+    .link { color: var(--accent); text-decoration: none; }
+
+    .toast { position: absolute; right: 14px; bottom: 14px; background: rgba(14,18,26,0.8); border: 1px solid rgba(255,255,255,0.08); color: var(--fg); padding: 10px 12px; border-radius: 10px; font-size: 12px; opacity: 0; transform: translateY(6px); transition: opacity .25s ease, transform .25s ease; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game"></canvas>
+    <div class="hud">
+      <div class="row"><div class="big" id="score">0</div><div class="small">best <span id="best">0</span> • wave <span id="wave">1</span></div></div>
+      <div class="small">toggle direction: Space or Click • pause: P • restart: R</div>
+    </div>
+    <div class="overlay" id="startOverlay">
+      <div class="card">
+        <h1 class="title">Orbitra</h1>
+        <p class="subtitle">One‑button bullet hell. You orbit the core. Enemies dive in. Survive, switch direction, auto‑fire, and clear waves.</p>
+        <div class="keys"><span class="k">Space</span> toggle • <span class="k">Click</span> toggle • <span class="k">P</span> pause • <span class="k">R</span> restart</div>
+        <div class="btnrow"><div class="btn" id="startBtn">Start</div><div class="btn" id="mutebtn">Sound Off</div></div>
+        <div class="credit">Tip: this is a single file. Commit it as <code>index.html</code> in a GitHub repo, then enable Pages.</div>
+      </div>
+    </div>
+    <div class="overlay" id="gameOver" style="display:none">
+      <div class="card">
+        <h2 class="title" id="overTitle">Game Over</h2>
+        <p class="subtitle" id="overSubtitle">You reached wave 1</p>
+        <div class="btnrow"><div class="btn" id="retryBtn">Play Again</div><div class="btn" id="shareBtn">Copy Share Link</div></div>
+      </div>
+    </div>
+    <div class="toast" id="toast">Copied to clipboard</div>
+  </div>
+
+  <script>
+  // ORBITRA — One‑Button Bullet Hell
+  // Single-file game for GitHub repo starters
+  // Author: You
+
+  // ===== Utilities =====
+  const rand = (a, b) => Math.random() * (b - a) + a;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const dist2 = (ax, ay, bx, by) => {
+    const dx = ax - bx, dy = ay - by; return dx*dx + dy*dy;
+  };
+
+  // ===== Audio (tiny) =====
+  let audioEnabled = false;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  let actx = null;
+  function beep(freq = 440, dur = 0.06, type = 'sine', vol = 0.03) {
+    if (!audioEnabled) return; if (!actx) actx = new AC();
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g); g.connect(actx.destination);
+    o.start();
+    setTimeout(() => { g.gain.exponentialRampToValueAtTime(1e-4, actx.currentTime + dur); }, 0);
+    setTimeout(() => { o.stop(); o.disconnect(); g.disconnect(); }, dur * 1000);
+  }
+
+  // ===== Game State =====
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const state = {
+    w: 0, h: 0, cx: 0, cy: 0,
+    running: false, started: false, paused: false, over: false,
+    score: 0, best: Number(localStorage.getItem('orbitra_best')||0), wave: 1,
+    time: 0, last: 0,
+    enemies: [], bullets: [], particles: [],
+  };
+
+  const player = {
+    r: 110, // orbit radius
+    angle: 0,
+    speed: 1.8, // rad/s
+    dir: 1, // 1 or -1
+    x: 0, y: 0, size: 8, cooldown: 0
+  };
+
+  function resize() {
+    const { clientWidth: w, clientHeight: h } = canvas;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    state.w = w; state.h = h; state.cx = w/2; state.cy = h/2;
+  }
+  function fit() {
+    const wrap = document.getElementById('wrap');
+    const rect = wrap.getBoundingClientRect();
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    resize();
+  }
+  window.addEventListener('resize', fit);
+  fit();
+
+  // ===== Entities =====
+  class Enemy {
+    constructor() {
+      const side = Math.floor(rand(0, 4));
+      const pad = 30;
+      let x, y;
+      if (side === 0) { x = -pad; y = rand(0, state.h); }
+      else if (side === 1) { x = state.w + pad; y = rand(0, state.h); }
+      else if (side === 2) { x = rand(0, state.w); y = -pad; }
+      else { x = rand(0, state.w); y = state.h + pad; }
+      this.x = x; this.y = y;
+      const toCenter = Math.atan2(state.cy - y, state.cx - x);
+      const base = 70 + state.wave * 4;
+      this.speed = rand(base, base + 40) / 60; // px per frame
+      this.vx = Math.cos(toCenter) * this.speed;
+      this.vy = Math.sin(toCenter) * this.speed;
+      this.size = rand(8, 12);
+      this.hp = 2 + Math.min(5, Math.floor(state.wave/2));
+      this.hitTime = 0;
+    }
+    step() {
+      this.x += this.vx; this.y += this.vy;
+      if (this.hitTime > 0) this.hitTime--;
+    }
+    draw(g) {
+      g.save();
+      g.translate(this.x, this.y);
+      const pulse = this.hitTime > 0 ? 1.4 : 1;
+      const r = this.size * pulse;
+      const grd = g.createRadialGradient(0,0,1, 0,0,r);
+      grd.addColorStop(0, 'rgba(255,230,106,0.95)');
+      grd.addColorStop(1, 'rgba(255,230,106,0.05)');
+      g.fillStyle = grd;
+      g.beginPath(); g.arc(0,0,r,0,Math.PI*2); g.fill();
+      g.restore();
+    }
+  }
+
+  class Bullet {
+    constructor(x, y, tx, ty) {
+      this.x = x; this.y = y;
+      const ang = Math.atan2(ty - y, tx - x);
+      const sp = 6.0; // px per frame
+      this.vx = Math.cos(ang) * sp; this.vy = Math.sin(ang) * sp;
+      this.life = 90; this.size = 3;
+    }
+    step() { this.x += this.vx; this.y += this.vy; this.life--; }
+    draw(g) {
+      g.save(); g.translate(this.x, this.y);
+      g.fillStyle = '#6ad1ff';
+      g.beginPath(); g.arc(0, 0, this.size, 0, Math.PI*2); g.fill();
+      g.restore();
+    }
+  }
+
+  class Particle {
+    constructor(x, y) {
+      this.x = x; this.y = y; this.life = rand(18, 28);
+      const a = rand(0, Math.PI*2), s = rand(1, 3.5);
+      this.vx = Math.cos(a) * s; this.vy = Math.sin(a) * s; this.sz = rand(1,2.2);
+    }
+    step() { this.x += this.vx; this.y += this.vy; this.life--; }
+    draw(g) { g.globalAlpha = Math.max(0, this.life/28); g.fillStyle = '#cfe9ff'; g.fillRect(this.x, this.y, this.sz, this.sz); g.globalAlpha = 1; }
+  }
+
+  // ===== Spawners =====
+  let enemyTimer = 0;
+  function spawnEnemies(dt) {
+    enemyTimer += dt;
+    const interval = Math.max(0.2, 1.2 - state.wave * 0.06);
+    if (enemyTimer >= interval) {
+      enemyTimer = 0;
+      state.enemies.push(new Enemy());
+    }
+  }
+
+  function tryShoot(dt) {
+    player.cooldown -= dt;
+    if (player.cooldown <= 0) {
+      // choose target: nearest enemy or center if none
+      let tx = state.cx, ty = state.cy, bestD = Infinity;
+      for (const e of state.enemies) {
+        const d = dist2(player.x, player.y, e.x, e.y);
+        if (d < bestD) { bestD = d; tx = e.x; ty = e.y; }
+      }
+      state.bullets.push(new Bullet(player.x, player.y, tx, ty));
+      player.cooldown = 0.16; // fire rate
+      beep(760, 0.04, 'triangle', 0.02);
+    }
+  }
+
+  // ===== Input =====
+  function toggleDir() { player.dir *= -1; beep(320, 0.05, 'sawtooth', 0.015); }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); if (!state.started) startGame(); else if (!state.over) toggleDir(); }
+    if (e.code === 'KeyP') { if (state.started && !state.over) { state.paused = !state.paused; } }
+    if (e.code === 'KeyR') { restart(); }
+  });
+  window.addEventListener('mousedown', () => { if (!state.started) startGame(); else if (!state.over) toggleDir(); });
+  window.addEventListener('touchstart', (e) => { e.preventDefault(); if (!state.started) startGame(); else if (!state.over) toggleDir(); }, { passive: false });
+
+  // ===== Loop =====
+  function update(dt) {
+    if (!state.running || state.paused || state.over) return;
+
+    state.time += dt; state.score += dt * 10;
+
+    // Increase difficulty by waves over time
+    if (state.time > state.wave * 12) { state.wave++; beep(500 + state.wave*10, 0.08, 'square', 0.02); }
+
+    // Move player on orbit
+    const R = Math.min(state.w, state.h) * 0.28;
+    player.r = lerp(player.r, R, 0.02);
+    player.angle += player.speed * player.dir * dt;
+    player.x = state.cx + Math.cos(player.angle) * player.r;
+    player.y = state.cy + Math.sin(player.angle) * player.r;
+
+    spawnEnemies(dt);
+    tryShoot(dt);
+
+    // Step entities
+    for (const e of state.enemies) e.step();
+    for (const b of state.bullets) b.step();
+    for (const p of state.particles) p.step();
+
+    // Collisions: bullets vs enemies
+    for (let i = state.enemies.length - 1; i >= 0; i--) {
+      const e = state.enemies[i];
+      for (let j = state.bullets.length - 1; j >= 0; j--) {
+        const b = state.bullets[j];
+        if (dist2(e.x, e.y, b.x, b.y) < (e.size + b.size) * (e.size + b.size)) {
+          e.hp--; e.hitTime = 6; state.bullets.splice(j,1);
+          if (e.hp <= 0) {
+            // explode
+            for (let k = 0; k < 14; k++) state.particles.push(new Particle(e.x, e.y));
+            state.enemies.splice(i,1);
+            state.score += 50; beep(220, 0.06, 'square', 0.02);
+          }
+          break;
+        }
+      }
+    }
+
+    // Player vs enemies
+    for (const e of state.enemies) {
+      const rr = (e.size + player.size) * (e.size + player.size);
+      if (dist2(e.x, e.y, player.x, player.y) < rr) {
+        gameOver();
+        break;
+      }
+    }
+
+    // GC
+    state.bullets = state.bullets.filter(b => b.life > 0 && b.x>-40 && b.y>-40 && b.x<state.w+40 && b.y<state.h+40);
+    state.particles = state.particles.filter(p => p.life>0);
+    state.enemies = state.enemies.filter(e => e.x>-80 && e.y>-80 && e.x<state.w+80 && e.y<state.h+80);
+
+    // HUD
+    document.getElementById('score').textContent = Math.floor(state.score);
+    document.getElementById('best').textContent = Math.floor(state.best);
+    document.getElementById('wave').textContent = state.wave;
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,state.w,state.h);
+
+    // core
+    ctx.save();
+    ctx.translate(state.cx, state.cy);
+    const radial = ctx.createRadialGradient(0,0, 4, 0,0, 70);
+    radial.addColorStop(0, 'rgba(106,209,255,0.55)');
+    radial.addColorStop(1, 'rgba(106,209,255,0.02)');
+    ctx.fillStyle = radial; ctx.beginPath(); ctx.arc(0,0, 70, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // orbit path
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(state.cx, state.cy, player.r, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+
+    // enemies
+    for (const e of state.enemies) e.draw(ctx);
+
+    // bullets
+    for (const b of state.bullets) b.draw(ctx);
+
+    // player
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    const g = ctx.createLinearGradient(-10,-10,10,10);
+    g.addColorStop(0, '#6ad1ff'); g.addColorStop(1, '#b1f0ff');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0,0, player.size, 0, Math.PI*2); ctx.fill();
+    // direction indicator
+    ctx.strokeStyle = '#ffffffcc'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(Math.cos(player.angle + Math.PI/2 * player.dir) * 14, Math.sin(player.angle + Math.PI/2 * player.dir) * 14); ctx.stroke();
+    ctx.restore();
+
+    // particles
+    for (const p of state.particles) p.draw(ctx);
+
+    // pause overlay
+    if (state.paused) {
+      ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(0,0,state.w,state.h); ctx.restore();
+      ctx.save(); ctx.fillStyle = '#cbd5e1'; ctx.font = '700 22px system-ui'; ctx.textAlign='center'; ctx.fillText('Paused — press P', state.cx, state.cy); ctx.restore();
+    }
+  }
+
+  function loop(ts) {
+    const now = ts / 1000;
+    const last = state.last || now; state.last = now;
+    const dt = clamp(now - last, 0, 0.033);
+    update(dt); draw();
+    requestAnimationFrame(loop);
+  }
+
+  function gameOver() {
+    if (state.over) return;
+    state.over = true; state.running = false; document.getElementById('gameOver').style.display = '';
+    const waveMsg = `You reached wave ${state.wave} and scored ${Math.floor(state.score)}`;
+    document.getElementById('overSubtitle').textContent = waveMsg;
+    document.getElementById('overTitle').textContent = state.score > state.best ? 'New Best!' : 'Game Over';
+    state.best = Math.max(state.best, state.score);
+    try { localStorage.setItem('orbitra_best', String(Math.floor(state.best))); } catch {}
+    beep(110, 0.12, 'sawtooth', 0.03);
+  }
+
+  function restart() {
+    // reset state but keep best
+    state.running = true; state.started = true; state.paused = false; state.over = false;
+    state.score = 0; state.wave = 1; state.time = 0; state.enemies = []; state.bullets = []; state.particles = []; player.cooldown = 0; player.angle = 0; player.dir = 1;
+    document.getElementById('gameOver').style.display = 'none';
+  }
+
+  function startGame() {
+    document.getElementById('startOverlay').style.display = 'none';
+    if (!state.started) { state.started = true; state.running = true; }
+  }
+
+  // UI buttons
+  document.getElementById('startBtn').addEventListener('click', () => startGame());
+  document.getElementById('retryBtn').addEventListener('click', () => { restart(); });
+  document.getElementById('mutebtn').addEventListener('click', (e) => {
+    audioEnabled = !audioEnabled; e.target.textContent = audioEnabled ? 'Sound On' : 'Sound Off';
+    if (audioEnabled && !actx) actx = new AC();
+  });
+  document.getElementById('shareBtn').addEventListener('click', () => {
+    // Since this is a single file, copying the page URL is fine
+    const t = document.getElementById('toast');
+    try { navigator.clipboard.writeText(location.href); t.textContent = 'Copied to clipboard'; } catch { t.textContent = 'Copy failed'; }
+    t.classList.add('show'); setTimeout(()=> t.classList.remove('show'), 1600);
+  });
+
+  // Kick off loop
+  requestAnimationFrame(loop);
+
+  // First layout sizing
+  resize();
+
+  // ===== How to turn this into a GitHub repo =====
+  // 1) Create a new repo named "orbitra" (public is fine)
+  // 2) Add this file as index.html at the repo root
+  // 3) Commit and push
+  // 4) Settings → Pages → Deploy from main branch → root
+  // 5) Your game will be live at your Pages URL
+
+  </script>
+</body>
+</html>
